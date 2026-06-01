@@ -44,13 +44,6 @@ val_data   = torch.tensor(val_ids, dtype=torch.long)
 test_data  = torch.tensor(test_ids, dtype=torch.long)
 
 
-#printing the size of different datas present
-
-print(train_data.shape)  
-print(val_data.shape)
-print(test_data.shape)
-
-
 #splitting the data and preparing inputs and targets
 
 def get_batch(split):
