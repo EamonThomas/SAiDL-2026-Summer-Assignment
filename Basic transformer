@@ -35,9 +35,6 @@ val_text = ' '.join(dataset['validation']['text'])
 
 vocab_size = tokenizer.vocab_size
 
-encode = lambda s: tokenizer.encode(s)
-decode = lambda l: tokenizer.decode(l)
-
 train_ids = tokenizer.encode(train_text)
 val_ids   = tokenizer.encode(val_text)
 test_ids  = tokenizer.encode(test_text)
