@@ -17,10 +17,10 @@ tokenizer.pad_token = tokenizer.eos_token
 batch_size = 4  
 block_size = 1024
 max_iterations = 7000 
-eval_interval = 200 
+eval_iteration = 200 
 learning_rate = 3e-4 
 device = 'cuda' if torch.cuda.is_available() else 'cpu' 
-eval_intervals = 100 
+num_eval_batches = 100 
 n_embedding = 128
 n_head = 4
 n_layer = 4
@@ -67,8 +67,8 @@ def estimate_loss():
     out = {}
     model.eval()
     for split in ['train', 'val', 'test']:
-        losses = torch.zeros(eval_intervals, device=device)
-        for k in range(eval_intervals):
+        losses = torch.zeros(num_eval_batches, device=device)
+        for k in range(num_eval_batches):
             X, Y = get_batch(split)
             if device == 'cuda':
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
@@ -220,7 +220,7 @@ torch.cuda.reset_peak_memory_stats()
 start_time = time.perf_counter()
 
 for iter in range(max_iterations):
-    if iter % eval_interval == 0 or iter == max_iterations - 1:
+    if iter % eval_iteration == 0 or iter == max_iterations - 1:
         losses = estimate_loss()
         val_ppl = math.exp(losses['val'])
         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, val ppl {val_ppl:.4f}")
