@@ -71,10 +71,7 @@ def estimate_loss():
         for k in range(eval_intervals):
             X, Y = get_batch(split)
             if device == 'cuda':
-                with torch.autocast(
-                    device_type='cuda',
-                    dtype=torch.float16
-                ):
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
                     _, loss = model(X, Y)
             else:
                 _, loss = model(X, Y)
