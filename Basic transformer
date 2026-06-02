@@ -143,8 +143,6 @@ class FeedFoward(nn.Module):
         return self.net(x)
 
 
-#block that initialises
-
 class Block(nn.Module):
    
     def __init__(self, n_embedding, n_head): #n_embedding = embedding dimension, n_head = no of heads
