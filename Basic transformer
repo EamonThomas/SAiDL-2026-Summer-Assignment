@@ -23,7 +23,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 num_eval_batches = 100 
 n_embedding = 128
 n_head = 4
-n_layer = 4
+n_layer = 4    #number of blocks
 dropout = 0.3
 
 
