@@ -1,0 +1,52 @@
+# code for sliding window attention variant 
+# for this variant we change the masking mechanism 
+# the first 2 lines help us create the matrix such that except for the window, all the other elements of the matrix are made to be zero with the help of upper and lower triangular matrix
+# the last line makes all the zeroes to negative infinity such that after we apply softmax, they become zero.
+
+mask = torch.tril(torch.ones(T, T, device=x.device))
+mask = torch.triu(mask,diagonal=-window_size)
+wei = wei.masked_fill(mask == 0,float('-inf'))
+
+
+# code for softmax free attention variant
+# here we remove the softmax layer and then we calculate the attention weights by first applying ReLU on all the weights.
+# now that only positive attention weights remain, we normalize the weights such that they add up to 1 and also keep a small buffer
+
+wei = F.relu(wei)
+wei = wei / (wei.sum(dim=-1, keepdim=True) + 1e-6)
+
+
+#code for multi query attention variant
+# for this we change the key and value matrix as now all the heads have a common key and value and also change the dimensions
+# we change the Head and MultiHeadAttention to a new class MultiQueryAttention
+# we initialise the selfattention in the class Block with MultiQueryAttention
+
+class MultiQueryAttention(nn.Module):
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_size = head_size
+        self.query = nn.Linear(n_embedding, num_heads * head_size, bias=False)
+        self.key = nn.Linear(n_embedding, head_size, bias=False)
+        self.value = nn.Linear(n_embedding, head_size, bias=False)
+        self.proj = nn.Linear(num_heads * head_size, n_embedding)
+        self.attn_dropout = nn.Dropout(dropout)
+        self.proj_dropout = nn.Dropout(dropout)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        B, T, C = x.shape
+        q = self.query(x).view(B, T, self.num_heads, self.head_size).transpose(1, 2)
+        k = self.key(x).unsqueeze(1)    
+        v = self.value(x).unsqueeze(1)  
+
+        wei = q @ k.transpose(-2, -1) * (self.head_size ** -0.5)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        wei = self.attn_dropout(wei)
+        out = wei @ v 
+
+        out = out.transpose(1, 2).contiguous().view(B, T, self.num_heads * self.head_size)
+        
+        return self.proj_dropout(self.proj(out))
