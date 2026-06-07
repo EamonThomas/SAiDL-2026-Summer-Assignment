@@ -1,0 +1,136 @@
+# RoPE 
+# here positional encoding is done during attention calculation
+# now we add a RotaryEmbedding class which calculates the inverse frequency and gives us the rotation
+# we also need to write the code for the rotation part which uses the rotation matrix multiplication
+
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer('inv_freq', inv_freq)
+
+    def forward(self, seq_len, device):
+        t = torch.arange(seq_len, device=device).float()
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat([freqs, freqs], dim=-1)         
+        cos = emb.cos().unsqueeze(0).unsqueeze(0)       
+        sin = emb.sin().unsqueeze(0).unsqueeze(0)       
+        return cos, sin    
+
+def rotate_half(x):
+    x1 = x[..., :x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2:]
+    return torch.cat([-x2, x1], dim=-1)
+
+def apply_rope(x, cos, sin):
+    return x * cos + rotate_half(x) * sin
+
+
+#ALiBi
+# here too we change the positional encoding method. Here, the attention score has a linear penalty to it that is directly proportional to the distance between the key and the query token
+# this penalty depends on the value of the slope, so we add code for the calculation of the slope.
+# we also make a bias table that helps us decide the penalty of the attention score
+# initially we were running the class Head in loop, now we calculate the K, Q, V at once and then use split_heads to reshape
+
+def get_alibi_slopes(n_heads):
+    def _slopes_for_n(n):
+        start = 2 ** (-(2 ** -(math.log2(n) - 3)))
+        ratio = start
+        return [start * (ratio ** i) for i in range(n)]
+
+    n = 2 ** math.floor(math.log2(n_heads))
+    slopes = _slopes_for_n(n)
+
+    if n < n_heads:
+        extra = _slopes_for_n(2 * n)
+        extra = extra[0::2]
+        slopes = slopes + extra[:n_heads - n]
+
+    return torch.tensor(slopes, dtype=torch.float32)
+
+def build_alibi_bias(n_heads, seq_len, device):
+    slopes   = get_alibi_slopes(n_heads).to(device)
+    positions = torch.arange(seq_len, device=device)
+    distance  = positions.unsqueeze(0) - positions.unsqueeze(1)  # (T, T)
+
+    alibi = slopes.unsqueeze(-1).unsqueeze(-1) * distance.unsqueeze(0)  # (n_heads, T, T)
+
+    causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=device)).bool()
+    alibi = alibi.masked_fill(~causal_mask, float('-inf'))
+
+    return alibi.unsqueeze(0)   # (1, n_heads, T, T)
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_heads, n_embedding):
+        super().__init__()
+        self.n_heads   = n_heads
+        self.head_size = n_embedding // n_heads
+        self.qkv     = nn.Linear(n_embedding, 3 * n_embedding, bias=False)
+        self.proj    = nn.Linear(n_embedding, n_embedding)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        q, k, v = self.qkv(x).split(C, dim=-1)
+
+        def split_heads(t):
+            return t.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
+
+        q, k, v = split_heads(q), split_heads(k), split_heads(v)
+
+        scores = (q @ k.transpose(-2, -1)) * (self.head_size ** -0.5)
+
+        # only new line vs standard attention:
+        scores = scores + build_alibi_bias(self.n_heads, T, x.device)
+
+        attn = self.dropout(F.softmax(scores, dim=-1))
+        out  = attn @ v
+        out  = out.transpose(1, 2).contiguous().view(B, T, C)
+        return self.proj(out)
+
+
+# Relative positional encoding
+# here we first change the embedding table as the embedding value can at max be equal to the value of the random integer 'k'
+# we also change the calculation of the attention score 
+
+class RelativePositionEmbedding(nn.Module):
+    def __init__(self, max_dist, n_heads):
+        super().__init__()
+        self.max_dist = max_dist
+        self.embeddings = nn.Embedding(2 * max_dist + 1, n_heads)
+
+    def forward(self, seq_len, device):
+        positions = torch.arange(seq_len, device=device)
+        distance = positions.unsqueeze(0) - positions.unsqueeze(1)   
+        distance = distance.clamp(-self.max_dist, self.max_dist)
+        distance = distance + self.max_dist                          
+        return self.embeddings(distance)
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_heads, n_embedding):
+        super().__init__()
+        self.n_heads   = n_heads
+        self.head_size = n_embedding // n_heads
+        self.qkv       = nn.Linear(n_embedding, 3 * n_embedding, bias=False)
+        self.proj      = nn.Linear(n_embedding, n_embedding)
+        self.dropout   = nn.Dropout(dropout)
+        self.rel_pos   = RelativePositionEmbedding(block_size, n_heads)  
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        B, T, C = x.shape
+        q, k, v = self.qkv(x).split(C, dim=-1)
+
+        def split_heads(t):
+            return t.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
+        
+        q, k, v = split_heads(q), split_heads(k), split_heads(v)
+        scores = (q @ k.transpose(-2, -1)) * (self.head_size ** -0.5)  # (B, n_heads, T, T)
+        rel_bias = self.rel_pos(T, x.device)                
+        rel_bias = rel_bias.permute(2, 0, 1).unsqueeze(0)   
+        scores   = scores + rel_bias
+        scores = scores.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+
+        attn = self.dropout(F.softmax(scores, dim=-1))
+        out  = (attn @ v).transpose(1, 2).contiguous().view(B, T, C)
+        return self.proj(out)
